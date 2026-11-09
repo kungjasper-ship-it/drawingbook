@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>數位繪本</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@500;700&display=swap">
+<style>
+:root{--bg:#12151d;--panel:#1c2130;--ink:#efe9dc;--mute:#9aa0b0;--gold:#e0a93f;--line:#2f3648}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:"Noto Serif TC","Songti TC",serif;display:flex;flex-direction:column}
+button{font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.5rem .8rem;cursor:pointer;display:inline-flex;align-items:center;gap:.4rem;min-height:44px}
+button:hover{border-color:var(--gold)}
+button:focus-visible,input:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+button[aria-disabled="true"]{opacity:.4;cursor:not-allowed}
+button[aria-pressed="true"]{border-color:var(--gold);background:#2a2618}
+button img{height:22px;width:auto;display:block}
+#app{flex:1;min-height:0;display:flex}
+#stage{flex:1;width:100%;min-height:0;margin:0;padding:.75rem;display:flex;flex-direction:column;align-items:center;gap:.6rem}
+#page{flex:1 1 0;min-height:0;width:100%;object-fit:contain}
+#caption{max-width:46rem;text-align:center;line-height:1.8;font-size:1.1rem}
+#caption:empty{display:none}
+#bar{background:var(--panel);border-top:1px solid var(--line);padding:.6rem .8rem;display:flex;flex-wrap:wrap;gap:.5rem;align-items:center;justify-content:center}
+#seek{flex:1 1 180px;max-width:360px;accent-color:var(--gold)}
+#ind{min-width:5.5rem;text-align:center;font-variant-numeric:tabular-nums}
+#start{position:fixed;inset:0;background:var(--bg);z-index:10;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:1rem;text-align:center;padding:1.5rem}
+#start[hidden]{display:none}
+#start img.hero{max-width:min(80vw,420px);max-height:40vh;border-radius:6px}
+#start img.spirit{height:64px}
+#start h1{font-size:clamp(1.6rem,5vw,2.4rem);margin:0}
+#start p{color:var(--mute);margin:0;max-width:30rem}
+#start .row{display:flex;gap:.6rem;flex-wrap:wrap;justify-content:center}
+#start .go{background:var(--gold);color:#1a1405;border-color:var(--gold);font-weight:700}
+#dbg{position:fixed;right:8px;top:8px;background:#000c;color:#9f9;font:12px/1.4 monospace;padding:8px;border-radius:6px;white-space:pre;z-index:20}
+#dbg[hidden]{display:none}
+@media (max-width:560px){.lbl{display:none}#bar{gap:.35rem}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="start" role="dialog" aria-label="開始閱讀">
+  <img class="hero" data-img="graphics/0" alt="繪本封面">
+  <img class="spirit" data-img="graphics/spirit" alt="">
+  <h1>電子繪本</h1>
+  <p>點下按鈕開始閱讀。可以用鍵盤方向鍵翻頁，手機可左右滑動。</p>
+  <div class="row">
+    <button id="btn-start" class="go" type="button">開始閱讀</button>
+    <button id="btn-resume" type="button" hidden>繼續上次閱讀</button>
+  </div>
+</div>
+
+<main id="app">
+  <figure id="stage">
+    <img id="page" alt="">
+    <figcaption id="caption" aria-live="polite"></figcaption>
+  </figure>
+</main>
+
+<nav id="bar" aria-label="繪本控制列">
+  <button id="btn-prev" type="button" aria-label="上一頁" title="上一頁（←）"><img data-img="graphics/left" alt=""><span class="lbl">上一頁</span></button>
+  <span id="ind" aria-live="polite">1 / 20</span>
+  <button id="btn-next" type="button" aria-label="下一頁" title="下一頁（→）"><span class="lbl">下一頁</span><img data-img="graphics/right" alt=""></button>
+  <input id="seek" type="range" min="1" max="20" value="1" aria-label="跳到指定頁">
+  <button id="btn-read" type="button" aria-label="朗讀本頁" title="朗讀本頁"><img data-img="graphics/read" alt=""><span class="lbl">朗讀</span></button>
+  <button id="btn-play" type="button" aria-label="自動播放" aria-pressed="false" title="自動播放（空白鍵）">▶<span class="lbl">自動播放</span></button>
+  <button id="btn-music" type="button" aria-label="背景音樂" aria-pressed="true" title="背景音樂（M）">♪<span class="lbl">音樂</span></button>
+  <button id="btn-full" type="button" aria-label="全螢幕" title="全螢幕（F）">⛶<span class="lbl">全螢幕</span></button>
+</nav>
+<pre id="dbg" hidden></pre>
+
+<script>
+const ROOT = 'assets/';          // 素材根資料夾
+const N = 20;                    // 總頁數（含封面）
+const DEBUG_KEY = 'F2';          // 除錯快捷鍵
+const FALLBACK_MS = 6000;        // 沒有人聲檔時，自動播放每頁停留時間
+const TEXTS = [];                // 每頁文字，例如 TEXTS[1] = '很久很久以前…'
+const IMG_EXT = ['png','jpg','jpeg','webp','gif'];
+const AUD_EXT = ['mp3','wav','m4a','ogg'];
+const $ = s => document.querySelector(s);
+
+// 依序嘗試不同副檔名，找到第一個存在的檔案
+const probeImg = u => new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(u); i.onerror = no; i.src = u; });
+const probeAud = u => new Promise((ok, no) => { const a = new Audio(); a.preload = 'metadata'; a.onloadedmetadata = () => ok(u); a.onerror = no; a.src = u; });
+const cache = {};
+function find(kind, base) {
+  const key = kind + base;
+  return cache[key] || (cache[key] = (kind === 'img' ? IMG_EXT : AUD_EXT)
+    .reduce((p, e) => p.catch(() => (kind === 'img' ? probeImg : probeAud)(`${ROOT}${base}.${e}`)), Promise.reject())
+    .catch(() => null));
+}
+document.querySelectorAll('[data-img]').forEach(async el => {
+  const u = await find('img', el.dataset.img);
+  if (u) el.src = u; else el.style.display = 'none';
+});
+
+const narr = new Audio(), bgm = new Audio();
+bgm.loop = true; bgm.volume = 0.3;
+let i = 0, started = false, playing = false, musicOn = true, tok = 0, timer = null, bgmSrc = '';
+
+const save = n => { try { localStorage.setItem('storybook-page', n); } catch (e) {} };
+const saved = () => { try { return +localStorage.getItem('storybook-page') || 0; } catch (e) { return 0; } };
+
+async function updateMusic() {
+  if (!started || !musicOn) { bgm.pause(); return; }
+  const u = (await find('aud', 'music/music' + i)) || (await find('aud', 'music/accompaniment')) || (await find('aud', 'music/伴奏'));
+  if (!u) return;
+  if (bgmSrc !== u) { bgmSrc = u; bgm.src = u; }
+  bgm.play().catch(() => {});
+}
+
+async function speak() {
+  const my = ++tok; clearTimeout(timer); narr.pause();
+  const u = await find('aud', 'speech/speech' + i);
+  if (my !== tok) return;
+  const next = () => { if (my !== tok || !playing) return; if (i < N - 1) go(i + 1); else setPlaying(false); };
+  if (!u) { if (playing) timer = setTimeout(next, FALLBACK_MS); return; }
+  narr.src = u; narr.onended = next;
+  narr.play().catch(() => { if (playing) timer = setTimeout(next, FALLBACK_MS); });
+}
+
+async function go(n, speakNow) {
+  i = Math.max(0, Math.min(N - 1, n)); save(i);
+  const u = await find('img', 'graphics/' + i);
+  const img = $('#page');
+  img.alt = `第 ${i + 1} 頁，共 ${N} 頁`;
+  if (u) img.src = u;
+  $('#caption').textContent = TEXTS[i] || '';
+  $('#ind').textContent = `${i + 1} / ${N}`;
+  $('#seek').value = i + 1;
+  $('#btn-prev').setAttribute('aria-disabled', i === 0);
+  $('#btn-next').setAttribute('aria-disabled', i === N - 1);
+  find('img', 'graphics/' + Math.min(i + 1, N - 1));
+  updateMusic();
+  if (started && (playing || speakNow)) speak(); else { tok++; narr.pause(); clearTimeout(timer); }
+  render();
+}
+
+function setPlaying(v) {
+  playing = v;
+  const b = $('#btn-play');
+  b.setAttribute('aria-pressed', v);
+  b.setAttribute('aria-label', v ? '暫停' : '自動播放');
+  b.firstChild.textContent = v ? '⏸' : '▶';
+  b.querySelector('.lbl').textContent = v ? '暫停' : '自動播放';
+  if (v) { if (i === N - 1) go(0); else speak(); } else { tok++; narr.pause(); clearTimeout(timer); }
+  render();
+}
+
+function begin(n) { started = true; $('#start').hidden = true; go(n); $('#btn-next').focus(); }
+
+$('#btn-start').onclick = () => begin(0);
+$('#btn-resume').onclick = () => begin(saved());
+$('#btn-prev').onclick = () => i > 0 && go(i - 1, !playing && !narr.paused);
+$('#btn-next').onclick = () => i < N - 1 && go(i + 1, !playing && !narr.paused);
+$('#seek').oninput = e => go(+e.target.value - 1);
+$('#btn-read').onclick = () => { if (playing) setPlaying(false); speak(); };
+$('#btn-play').onclick = () => setPlaying(!playing);
+$('#btn-music').onclick = () => {
+  musicOn = !musicOn;
+  $('#btn-music').setAttribute('aria-pressed', musicOn);
+  updateMusic(); render();
+};
+$('#btn-full').onclick = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.();
+
+addEventListener('keydown', e => {
+  if (e.key === DEBUG_KEY) { e.preventDefault(); $('#dbg').hidden = !$('#dbg').hidden; render(); return; }
+  if (!started || e.target.matches('input')) return;
+  if (e.key === 'ArrowRight') $('#btn-next').click();
+  else if (e.key === 'ArrowLeft') $('#btn-prev').click();
+  else if (e.key === 'Home') go(0);
+  else if (e.key === 'End') go(N - 1);
+  else if (e.key === ' ' && !e.target.matches('button')) { e.preventDefault(); setPlaying(!playing); }
+  else if (e.key.toLowerCase() === 'm') $('#btn-music').click();
+  else if (e.key.toLowerCase() === 'f') $('#btn-full').click();
+});
+
+let sx = 0;
+$('#stage').addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive: true });
+$('#stage').addEventListener('touchend', e => {
+  const d = e.changedTouches[0].clientX - sx;
+  if (Math.abs(d) > 50) (d < 0 ? $('#btn-next') : $('#btn-prev')).click();
+}, { passive: true });
+
+const state = () => ({ page: i + 1, total: N, started, autoplay: playing, music: musicOn, narrationPlaying: !narr.paused, musicPlaying: !bgm.paused });
+function render() { if (!$('#dbg').hidden) $('#dbg').textContent = JSON.stringify(state(), null, 1); }
+window.storybook = { state, go: n => go(n - 1), next: () => $('#btn-next').click(), prev: () => $('#btn-prev').click() };
+narr.addEventListener('play', render); narr.addEventListener('pause', render);
+bgm.addEventListener('play', render); bgm.addEventListener('pause', render);
+
+if (saved() > 0) { $('#btn-resume').hidden = false; $('#btn-resume').textContent = `繼續閱讀（第 ${saved() + 1} 頁）`; }
+$('#btn-start').focus();
+go(0);
+</script>
+</body>
+</html>
